@@ -25,7 +25,7 @@
     unused_import_braces,
     unused_qualifications
 )]
-#![allow(unknown_lints)] // for clippy
+#![allow(unexpected_cfgs, unknown_lints)] // for clippy
 
 //! `alass` takes two timespan arrays (e.g. from two subtitle files) and
 //! tries to align the `incorrect` subtitles

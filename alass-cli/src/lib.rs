@@ -1,6 +1,7 @@
+#![allow(unexpected_cfgs)]
+
 use alass_core::{TimeDelta as AlgTimeDelta, TimePoint as AlgTimePoint, TimeSpan as AlgTimeSpan};
 use encoding_rs::Encoding;
-use failure::ResultExt;
 use pbr::ProgressBar;
 use std::cmp::{max, min};
 use std::ffi::OsStr;
@@ -105,22 +106,21 @@ impl video_decoder::ProgressHandler for ProgressInfo {
 }
 
 pub fn read_file_to_bytes(path: &Path) -> std::result::Result<Vec<u8>, FileOperationError> {
-    let mut file = File::open(path).with_context(|_| FileOperationErrorKind::FileOpen {
+    let mut file = File::open(path).map_err(|_| FileOperationError::FileOpen {
         path: path.to_path_buf(),
     })?;
     let mut v = Vec::new();
-    file.read_to_end(&mut v)
-        .with_context(|_| FileOperationErrorKind::FileRead {
-            path: path.to_path_buf(),
-        })?;
+    file.read_to_end(&mut v).map_err(|_| FileOperationError::FileRead {
+        path: path.to_path_buf(),
+    })?;
     Ok(v)
 }
 
 pub fn write_data_to_file(path: &Path, d: Vec<u8>) -> std::result::Result<(), FileOperationError> {
-    let mut file = File::create(path).with_context(|_| FileOperationErrorKind::FileOpen {
+    let mut file = File::create(path).map_err(|_| FileOperationError::FileOpen {
         path: path.to_path_buf(),
     })?;
-    file.write_all(&d).with_context(|_| FileOperationErrorKind::FileWrite {
+    file.write_all(&d).map_err(|_| FileOperationError::FileWrite {
         path: path.to_path_buf(),
     })?;
     Ok(())
@@ -198,17 +198,17 @@ impl SubtitleFileHandler {
         sub_fps: f64,
     ) -> Result<SubtitleFileHandler, InputSubtitleError> {
         let sub_data = read_file_to_bytes(file_path.as_ref())
-            .with_context(|_| InputSubtitleErrorKind::ReadingSubtitleFileFailed(file_path.to_path_buf()))?;
+            .map_err(|_| InputSubtitleError::ReadingSubtitleFileFailed(file_path.to_path_buf()))?;
 
         let file_format = get_subtitle_format_err(file_path.extension(), &sub_data)
-            .with_context(|_| InputSubtitleErrorKind::UnknownSubtitleFormat(file_path.to_path_buf()))?;
+            .map_err(|_| InputSubtitleError::UnknownSubtitleFormat(file_path.to_path_buf()))?;
 
         let parsed_subtitle_data: SubtitleFile = parse_bytes(file_format, &sub_data, sub_encoding, sub_fps)
-            .with_context(|_| InputSubtitleErrorKind::ParsingSubtitleFailed(file_path.to_path_buf()))?;
+            .map_err(|_| InputSubtitleError::ParsingSubtitleFailed(file_path.to_path_buf()))?;
 
         let subparse_timespans: Vec<subparse::timetypes::TimeSpan> = parsed_subtitle_data
             .get_subtitle_entries()
-            .with_context(|_| InputSubtitleErrorKind::RetreivingSubtitleLinesFailed(file_path.to_path_buf()))?
+            .map_err(|_| InputSubtitleError::RetrievingSubtitleLinesFailed(file_path.to_path_buf()))?
             .into_iter()
             .map(|subentry| subentry.timespan)
             .map(|timespan: subparse::timetypes::TimeSpan| {
@@ -273,7 +273,7 @@ impl VideoFileHandler {
                 let is_voice = self
                     .fvad
                     .is_voice_segment(samples)
-                    .map_err(|_| InputVideoErrorKind::VadAnalysisFailed)?;
+                    .map_err(|_| InputVideoError::VadAnalysisFailed)?;
 
                 self.vad_buffer.push(is_voice);
 
@@ -292,10 +292,11 @@ impl VideoFileHandler {
 
         let chunk_processor = video_decoder::ChunkedAudioReceiver::new(80, vad_processor);
 
-        let vad_buffer = video_decoder::VideoDecoder::decode(file_path, audio_index, chunk_processor, video_decode_progress)
-            .with_context(|_| InputVideoErrorKind::FailedToDecode {
-                path: PathBuf::from(file_path),
-            })?;
+        let vad_buffer =
+            video_decoder::VideoDecoder::decode(file_path, audio_index, chunk_processor, video_decode_progress)
+                .map_err(|_| InputVideoError::FailedToDecode {
+                    path: PathBuf::from(file_path),
+                })?;
 
         let mut voice_segments: Vec<(i64, i64)> = Vec::new();
         let mut voice_segment_start: i64 = 0;
@@ -361,21 +362,23 @@ impl InputFileHandler {
         sub_fps: f64,
         video_decode_progress: impl video_decoder::ProgressHandler,
     ) -> Result<InputFileHandler, InputFileError> {
-        let known_subitle_endings: [&str; 6] = ["srt", "vob", "idx", "ass", "ssa", "sub"];
+        let known_subtitle_endings: [&str; 6] = ["srt", "vob", "idx", "ass", "ssa", "sub"];
 
         let extension: Option<&OsStr> = file_path.extension();
 
-        for &subtitle_ending in known_subitle_endings.iter() {
+        for &subtitle_ending in known_subtitle_endings.iter() {
             if extension == Some(OsStr::new(subtitle_ending)) {
                 return Ok(SubtitleFileHandler::open_sub_file(file_path, sub_encoding, sub_fps)
                     .map(|v| InputFileHandler::Subtitle(v))
-                    .with_context(|_| InputFileErrorKind::SubtitleFile(file_path.to_path_buf()))?);
+                    .map_err(|_| InputFileError::SubtitleFile(file_path.to_path_buf()))?);
             }
         }
 
-        return Ok(VideoFileHandler::open_video_file(file_path, audio_index, video_decode_progress)
-            .map(|v| InputFileHandler::Video(v))
-            .with_context(|_| InputFileErrorKind::VideoFile(file_path.to_path_buf()))?);
+        return Ok(
+            VideoFileHandler::open_video_file(file_path, audio_index, video_decode_progress)
+                .map(|v| InputFileHandler::Video(v))
+                .map_err(|_| InputFileError::VideoFile(file_path.to_path_buf()))?,
+        );
     }
 
     pub fn into_subtitle_file(self) -> Option<SubtitleFile> {
@@ -445,7 +448,7 @@ pub fn guess_fps_ratio(
     (opt_idx, opt_delta)
 }
 
-pub fn print_error_chain(error: failure::Error) {
+pub fn print_error_chain(error: anyhow::Error) {
     let show_bt_opt = std::env::vars()
         .find(|(key, _)| key == "RUST_BACKTRACE")
         .map(|(_, value)| value);
@@ -456,13 +459,8 @@ pub fn print_error_chain(error: failure::Error) {
         println!("stack trace: {}", error.backtrace());
     }
 
-    for cause in error.as_fail().iter_causes() {
+    for cause in error.chain() {
         println!("caused by: {}", cause);
-        if show_bt {
-            if let Some(backtrace) = cause.backtrace() {
-                println!("stack trace: {}", backtrace);
-            }
-        }
     }
 
     if !show_bt {

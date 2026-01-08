@@ -1,6 +1,4 @@
-use failure::{Backtrace, Context, Fail, ResultExt};
 use std::ffi::OsString;
-use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Child;
@@ -8,33 +6,22 @@ use std::process::{ChildStdout, Command, Output, Stdio};
 use std::str::from_utf8;
 
 use byteorder::ByteOrder;
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 
-use crate::define_error;
-
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum CodecType {
     Audio,
     Video,
     Subtitle,
+    #[serde(untagged)]
     Other(String),
-}
-
-impl<'de> Deserialize<'de> for CodecType {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(d)?;
-        match &s[..] {
-            "audio" => Ok(CodecType::Audio),
-            "video" => Ok(CodecType::Video),
-            "subtitle" => Ok(CodecType::Subtitle),
-            s => Ok(CodecType::Other(s.to_owned())),
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]
 struct Stream {
     pub index: usize,
+    #[allow(dead_code)]
     pub codec_long_name: String,
     pub channels: Option<usize>,
     /// `.mkv` does not store the duration in the streams; we have to use `format -> duration` instead
@@ -54,49 +41,6 @@ struct Metadata {
     format: Option<Format>,
 }
 
-define_error!(DecoderError, DecoderErrorKind);
-
-#[derive(Debug, Fail)]
-pub enum DecoderErrorKind {
-    FailedToDecodeVideoStreamInfo,
-    ExtractingMetadataFailed {
-        cmd_path: PathBuf,
-        file_path: PathBuf,
-        args: Vec<OsString>,
-    },
-    NoAudioStream {
-        path: PathBuf,
-    },
-    FailedExtractingAudio {
-        file_path: PathBuf,
-        cmd_path: PathBuf,
-        args: Vec<OsString>,
-    },
-    FailedSpawningSubprocess {
-        path: PathBuf,
-        args: Vec<OsString>,
-    },
-    WaitingForProcessFailed {
-        cmd_path: PathBuf,
-    },
-    ProcessErrorCode {
-        cmd_path: PathBuf,
-        code: Option<i32>,
-    },
-    ProcessErrorMessage {
-        msg: String,
-    },
-    DeserializingMetadataFailed {
-        path: PathBuf,
-    },
-    ReadError,
-    FailedToParseDuration {
-        s: String,
-    },
-    AudioSegmentProcessingFailed,
-    NoDurationInformation,
-}
-
 fn format_cmd(cmd_path: &PathBuf, args: &[OsString]) -> String {
     let args_string: String = args
         .iter()
@@ -106,65 +50,48 @@ fn format_cmd(cmd_path: &PathBuf, args: &[OsString]) -> String {
     format!("{} {}", cmd_path.display(), args_string)
 }
 
-impl fmt::Display for DecoderErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DecoderErrorKind::FailedToDecodeVideoStreamInfo => write!(f, "failed to decode video stream info"),
-            DecoderErrorKind::DeserializingMetadataFailed { path } => {
-                write!(f, "failed to deserialize metadata of file '{}'", path.display())
-            }
-            DecoderErrorKind::NoAudioStream { path } => write!(f, "no audio stream in file '{}'", path.display()),
-            DecoderErrorKind::FailedExtractingAudio {
-                file_path,
-                cmd_path,
-                args,
-            } => write!(
-                f,
-                "failed to extract audio from '{}' with '{}' ",
-                file_path.display(),
-                format_cmd(cmd_path, args)
-            ),
-            DecoderErrorKind::FailedSpawningSubprocess { path, args } => {
-                write!(f, "failed to spawn subprocess '{}' ", format_cmd(path, args))
-            }
-            DecoderErrorKind::WaitingForProcessFailed { cmd_path } => {
-                write!(f, "failed to check status of subprocess '{}'", cmd_path.display())
-            }
-            DecoderErrorKind::ProcessErrorCode { cmd_path, code } => write!(
-                f,
-                "process '{}' returned error code '{}'",
-                cmd_path.display(),
-                code.map(|x| x.to_string())
-                    .unwrap_or_else(|| String::from("interrupted?"))
-            ),
-            DecoderErrorKind::ProcessErrorMessage { msg } => write!(f, "stderr: {}", msg),
-            DecoderErrorKind::ExtractingMetadataFailed {
-                file_path,
-                cmd_path,
-                args,
-            } => write!(
-                f,
-                "failed to extract metadata from '{}' using command '{}'",
-                file_path.display(),
-                format_cmd(cmd_path, args)
-            ),
-            DecoderErrorKind::ReadError => write!(f, "error while reading stdout"),
-            DecoderErrorKind::FailedToParseDuration { s } => {
-                write!(f, "failed to parse duration string '{}' from metadata", s)
-            }
-            DecoderErrorKind::AudioSegmentProcessingFailed => write!(f, "processing audio segment failed"),
-            DecoderErrorKind::NoDurationInformation => write!(f, "no audio duration information found"),
-        }
-    }
-}
-
-trait IntoOk<T> {
-    fn into_ok<I>(self) -> Result<T, I>;
-}
-impl<T> IntoOk<T> for T {
-    fn into_ok<I>(self) -> Result<T, I> {
-        Ok(self)
-    }
+#[derive(Debug, thiserror::Error)]
+pub enum DecoderError {
+    #[error("failed to decode video stream info")]
+    FailedToDecodeVideoStreamInfo,
+    #[error(
+        "failed to extract metadata from '{file_path}' using command '{}'",
+        format_cmd(cmd_path, args)
+    )]
+    ExtractingMetadataFailed {
+        cmd_path: PathBuf,
+        file_path: PathBuf,
+        args: Vec<OsString>,
+    },
+    #[error("no audio stream in file '{path}'")]
+    NoAudioStream { path: PathBuf },
+    #[error("failed to extract audio from '{file_path}' with '{}'", format_cmd(cmd_path, args))]
+    FailedExtractingAudio {
+        file_path: PathBuf,
+        cmd_path: PathBuf,
+        args: Vec<OsString>,
+    },
+    #[error("failed to spawn subprocess '{}'", format_cmd(path, args))]
+    FailedSpawningSubprocess { path: PathBuf, args: Vec<OsString> },
+    #[error("failed to check status of subprocess '{cmd_path}'")]
+    WaitingForProcessFailed { cmd_path: PathBuf },
+    #[error(
+        "process '{cmd_path}' returned error code '{}'",
+        code.map_or_else(|| String::from("interrupted?"), |x| x.to_string()),
+    )]
+    ProcessErrorCode { cmd_path: PathBuf, code: Option<i32> },
+    #[error("stderr: {msg}")]
+    ProcessErrorMessage { msg: String },
+    #[error("failed to deserialize metadata of file '{path}'")]
+    DeserializingMetadataFailed { path: PathBuf },
+    #[error("error while reading stdout")]
+    ReadError,
+    #[error("failed to parse duration string '{s}' from metadata")]
+    FailedToParseDuration { s: String },
+    #[error("processing audio segment failed")]
+    AudioSegmentProcessingFailed,
+    #[error("no audio duration information found")]
+    NoDurationInformation,
 }
 
 pub struct VideoDecoderFFmpegBinary {}
@@ -196,8 +123,8 @@ impl VideoDecoderFFmpegBinary {
             .into();
 
         let metadata: Metadata =
-            Self::get_metadata(file_path_buf.clone(), ffprobe_path.clone(), &args).with_context(|_| {
-                DecoderErrorKind::ExtractingMetadataFailed {
+            Self::get_metadata(file_path_buf.clone(), ffprobe_path.clone(), &args).map_err(|_| {
+                DecoderError::ExtractingMetadataFailed {
                     file_path: file_path_buf.clone(),
                     cmd_path: ffprobe_path.clone(),
                     args: args,
@@ -210,17 +137,15 @@ impl VideoDecoderFFmpegBinary {
             .filter(|s| s.codec_type == CodecType::Audio && s.channels.is_some());
 
         let best_stream_opt = match audio_index {
-            None => audio_streams
-                .min_by_key(|s| s.channels.unwrap()),
-            Some(ai) => audio_streams
-                .find(|s| s.index == ai)
+            None => audio_streams.min_by_key(|s| s.channels.unwrap()),
+            Some(ai) => audio_streams.find(|s| s.index == ai),
         };
 
         let best_stream: Stream;
         match best_stream_opt {
             Some(x) => best_stream = x,
             None => {
-                return Err(DecoderError::from(DecoderErrorKind::NoAudioStream {
+                return Err(DecoderError::from(DecoderError::NoAudioStream {
                     path: file_path.as_ref().into(),
                 }))
             }
@@ -264,23 +189,23 @@ impl VideoDecoderFFmpegBinary {
         let duration_str = best_stream
             .duration
             .or_else(|| format_opt.and_then(|format| format.duration))
-            .ok_or_else(|| DecoderError::from(DecoderErrorKind::NoDurationInformation))?;
+            .ok_or_else(|| DecoderError::from(DecoderError::NoDurationInformation))?;
 
         let duration = duration_str
             .parse::<f64>()
-            .with_context(|_| DecoderErrorKind::FailedToParseDuration { s: duration_str })?;
+            .map_err(|_| DecoderError::FailedToParseDuration { s: duration_str })?;
 
         let num_samples: i64 = (duration * 8000.0) as i64 / PROGRESS_PRESCALER;
 
         progress_handler.init(num_samples);
 
-        return Self::extract_audio_stream(receiver, progress_handler, ffmpeg_path.clone(), &args)
-            .with_context(|_| DecoderErrorKind::FailedExtractingAudio {
+        return Self::extract_audio_stream(receiver, progress_handler, ffmpeg_path.clone(), &args).map_err(|_| {
+            DecoderError::FailedExtractingAudio {
                 file_path: file_path_buf.clone(),
                 cmd_path: ffmpeg_path.clone(),
                 args: args,
-            })?
-            .into_ok();
+            }
+        });
     }
 
     fn extract_audio_stream<T>(
@@ -295,7 +220,7 @@ impl VideoDecoderFFmpegBinary {
             .stderr(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
-            .with_context(|_| DecoderErrorKind::FailedSpawningSubprocess {
+            .map_err(|_| DecoderError::FailedSpawningSubprocess {
                 path: ffmpeg_path.clone(),
                 args: args.to_vec(),
             })?;
@@ -317,16 +242,16 @@ impl VideoDecoderFFmpegBinary {
             // improves performance by allowing ffmpeg to generate more data in pipe
             // TODO: an async tokio read might also have the same effect (without being as machine dependent)
             //  -> too low: does not do anything (+some otherhead)
-            //  -> too high: slows down computaton because ffmpeg has to wait for this process to read
+            //  -> too high: slows down computation because ffmpeg has to wait for this process to read
             //std::thread::sleep(Duration::from_nanos(1000));
 
-            let read_bytes = stdout.read(&mut data).with_context(|_| DecoderErrorKind::ReadError)?;
+            let read_bytes = stdout.read(&mut data).map_err(|_| DecoderError::ReadError)?;
             //println!("{}", read_bytes);
 
             if read_bytes == 0 {
                 match ffmpeg_process
                     .wait()
-                    .with_context(|_| DecoderErrorKind::WaitingForProcessFailed {
+                    .map_err(|_| DecoderError::WaitingForProcessFailed {
                         cmd_path: ffmpeg_path.clone(),
                     })?
                     .code()
@@ -334,15 +259,15 @@ impl VideoDecoderFFmpegBinary {
                     Some(0) => {
                         receiver
                             .push_samples(&data2)
-                            .with_context(|_| DecoderErrorKind::AudioSegmentProcessingFailed)?;
+                            .map_err(|_| DecoderError::AudioSegmentProcessingFailed)?;
                         data2.clear();
                         progress_handler.finish();
                         return Ok(receiver
                             .finish()
-                            .with_context(|_| DecoderErrorKind::AudioSegmentProcessingFailed)?);
+                            .map_err(|_| DecoderError::AudioSegmentProcessingFailed)?);
                     }
                     code @ Some(_) | code @ None => {
-                        let error_code_err: DecoderErrorKind = DecoderErrorKind::ProcessErrorCode {
+                        let error_code_err: DecoderError = DecoderError::ProcessErrorCode {
                             cmd_path: ffmpeg_path,
                             code: code,
                         };
@@ -352,17 +277,17 @@ impl VideoDecoderFFmpegBinary {
                             .stderr
                             .unwrap()
                             .read_to_end(&mut stderr_data)
-                            .with_context(|_| DecoderErrorKind::ReadError)?;
+                            .map_err(|_| DecoderError::ReadError)?;
 
                         let stderr_str: String = String::from_utf8_lossy(&stderr_data).into();
 
                         if stderr_str.is_empty() {
                             return Err(error_code_err.into());
                         } else {
-                            return Err(DecoderError::from(DecoderErrorKind::ProcessErrorMessage {
+                            return Err(DecoderError::from(DecoderError::ProcessErrorMessage {
                                 msg: stderr_str,
                             }))
-                            .with_context(|_| error_code_err)
+                            .map_err(|_| error_code_err)
                             .map_err(|x| DecoderError::from(x));
                         }
                     }
@@ -377,7 +302,7 @@ impl VideoDecoderFFmpegBinary {
                         let sample = byteorder::LittleEndian::read_i16(&two_bytes);
                         receiver
                             .push_samples(&[sample])
-                            .with_context(|_| DecoderErrorKind::AudioSegmentProcessingFailed)?;
+                            .map_err(|_| DecoderError::AudioSegmentProcessingFailed)?;
 
                         if progress_prescaler_counter == PROGRESS_PRESCALER {
                             progress_handler.inc();
@@ -405,7 +330,7 @@ impl VideoDecoderFFmpegBinary {
             .stderr(Stdio::piped())
             .stdout(Stdio::piped())
             .output()
-            .with_context(|_| DecoderErrorKind::FailedSpawningSubprocess {
+            .map_err(|_| DecoderError::FailedSpawningSubprocess {
                 path: ffprobe_path.clone(),
                 args: args.to_vec(),
             })?;
@@ -416,7 +341,7 @@ impl VideoDecoderFFmpegBinary {
                 .trim_end()
                 .to_string();
 
-            let err = DecoderErrorKind::ProcessErrorCode {
+            let err = DecoderError::ProcessErrorCode {
                 cmd_path: ffprobe_path.clone(),
                 code: ffprobe_process.status.code(),
             };
@@ -424,19 +349,16 @@ impl VideoDecoderFFmpegBinary {
             if stderr.is_empty() {
                 return Err(DecoderError::from(err));
             } else {
-                return Err(DecoderError::from(DecoderErrorKind::ProcessErrorMessage {
-                    msg: stderr,
-                }))
-                .with_context(|_| err)
-                .map_err(|x| DecoderError::from(x));
+                return Err(DecoderError::from(DecoderError::ProcessErrorMessage { msg: stderr }))
+                    .map_err(|_| err)
+                    .map_err(|x| DecoderError::from(x));
             }
         }
 
-        let stdout =
-            from_utf8(&ffprobe_process.stdout).with_context(|_| DecoderErrorKind::FailedToDecodeVideoStreamInfo)?;
+        let stdout = from_utf8(&ffprobe_process.stdout).map_err(|_| DecoderError::FailedToDecodeVideoStreamInfo)?;
 
-        let metadata: Metadata = serde_json::from_str(stdout)
-            .with_context(|_| DecoderErrorKind::DeserializingMetadataFailed { path: file_path })?;
+        let metadata: Metadata =
+            serde_json::from_str(stdout).map_err(|_| DecoderError::DeserializingMetadataFailed { path: file_path })?;
 
         Ok(metadata)
     }

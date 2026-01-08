@@ -3,7 +3,6 @@
 use alass_cli::*;
 use clap::value_t;
 use clap::{App, Arg};
-use failure::{Backtrace, Context, Fail, ResultExt};
 use rmp_serde as rmps;
 use std::cmp::Ordering;
 use std::cmp::{max, min};
@@ -721,31 +720,31 @@ fn get_line_pairs(a: &[database::LineInfo], b: &[database::LineInfo], config: &L
     loop {
         match score[idx(ai, bi)].2 {
             Some(BestChoice::Match) => {
-                let mut ambigous = false;
+                let mut ambiguous = false;
                 let certain_unmatch_similarity = config.certain_unmatch_similarity.to_f32();
                 for ax in 0..alen {
                     if ax == ai {
                         continue;
                     }
                     if score[idx(ax, bi)].1 > certain_unmatch_similarity {
-                        ambigous = true;
+                        ambiguous = true;
                         break;
                     }
                 }
 
-                if !ambigous {
+                if !ambiguous {
                     for bx in 0..blen {
                         if bx == bi {
                             continue;
                         }
                         if score[idx(ai, bx)].1 > certain_unmatch_similarity {
-                            ambigous = true;
+                            ambiguous = true;
                             break;
                         }
                     }
                 }
 
-                if !ambigous {
+                if !ambiguous {
                     result.push((ai, bi));
                 }
 
@@ -820,6 +819,7 @@ fn get_line_pairs(a: &[database::LineInfo], b: &[database::LineInfo], config: &L
 }
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 struct RunConfig {
     statistics_folder_path_opt: Option<PathBuf>,
     statistics_required_tags: Vec<String>,
@@ -834,22 +834,12 @@ struct RunConfig {
     vad_config: VADConfig,
 }
 
-define_error!(TopLevelError, TopLevelErrorKind);
-
-pub enum TopLevelErrorKind {
+#[derive(Clone, Debug, thiserror::Error)]
+pub enum TopLevelError {
+    #[error("error reading video file `{path}`")]
     ErrorReadingVideoFile { path: PathBuf },
+    #[error("error serializing cache file")]
     SerializingCacheFailed {},
-}
-
-impl fmt::Display for TopLevelErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TopLevelErrorKind::ErrorReadingVideoFile { path } => {
-                write!(f, "error reading video file `{}`", path.display())
-            }
-            TopLevelErrorKind::SerializingCacheFailed {} => write!(f, "error serializing cache file"),
-        }
-    }
 }
 
 // threaded statistics and cache type
@@ -872,13 +862,14 @@ fn perform_vad(movie: &database::Movie, cache: TCache) -> Result<Vec<Span>, TopL
         None => {
             let video_file_handler: VideoFileHandler = VideoFileHandler::open_video_file(
                 movie.path.as_path(),
+                None,
                 NoProgressInfo {},
                 /*ProgressInfo::new(
                     500,
                     Some(format!("extracting audio from movie '{}'...", movie.path.display())),
                 ),*/
             )
-            .with_context(|_| TopLevelErrorKind::ErrorReadingVideoFile {
+            .map_err(|_| TopLevelError::ErrorReadingVideoFile {
                 path: movie.path.clone(),
             })?;
 
@@ -1341,7 +1332,7 @@ fn get_distances_for_line_info_with_deltas(
         .collect::<Vec<i64>>()
 }*/
 
-fn print_ignore_error_for_movie(e: impl Into<failure::Error>, movie: &database::Movie) {
+fn print_ignore_error_for_movie(e: impl Into<anyhow::Error>, movie: &database::Movie) {
     println!("<<<< Ignoring error for movie [{}; '{}']", movie.id, movie.name);
     print_error_chain(e.into());
     println!(">>>>");
@@ -1485,7 +1476,7 @@ fn run() -> Result<(), TopLevelError> {
         .arg(
             Arg::with_name("cache-dir")
                 .long("cache-dir")
-                .value_name("CACHE_DIRECOTRY")
+                .value_name("CACHE_DIRECTORY")
                 .multiple(false)
                 .help("Path to the cache directory")
                 .takes_value(true),
@@ -1758,7 +1749,7 @@ fn run() -> Result<(), TopLevelError> {
             if cache_file_path.exists() {
                 let file = File::open(cache_file_path).expect("cache file not found");
                 let file_reader = BufReader::with_capacity(1024, file);
-                cache = rmps::from_read(file_reader).expect("error while reading chache file");
+                cache = rmps::from_read(file_reader).expect("error while reading cache file");
             } else {
                 cache = cache::Root::default();
                 println!("`{}` not found - creating cache file...", cache_file_path.display());
@@ -1810,7 +1801,7 @@ fn run() -> Result<(), TopLevelError> {
 
     assert!(max_good_sync_offsets.len() == required_good_sync_spans_percentages.len());
 
-    let default_sync_classificiation_conf = SyncClassificationConfig {
+    let default_sync_classification_conf = SyncClassificationConfig {
         required_segments_for_sync_classification: 10,
         good_sync_requirements: max_good_sync_offsets
             .into_iter()
@@ -1840,7 +1831,7 @@ fn run() -> Result<(), TopLevelError> {
 
         vad_config: default_vad_conf,
 
-        sync_classification_config: default_sync_classificiation_conf,
+        sync_classification_config: default_sync_classification_conf,
     };
 
     if let Some(only_movies) = only_movies_opt {
@@ -2008,7 +1999,7 @@ fn run() -> Result<(), TopLevelError> {
                 }
 
                 if raw_sync_classification == SyncClassification::Unknown {
-                    // we can't use this subtilte
+                    // we can't use this subtitle
                     let mut statistics = statistics.lock().unwrap();
                     statistics
                         .general
@@ -2476,7 +2467,7 @@ fn run() -> Result<(), TopLevelError> {
             let file = File::create(cache_dir.join("cache.dat")).expect("cache file not found");
             let mut file_write = BufWriter::with_capacity(1024, file);
             rmps::encode::write_named(&mut file_write, &*cache.lock().unwrap())
-                .with_context(|_| TopLevelErrorKind::SerializingCacheFailed {})?;
+                .map_err(|_| TopLevelError::SerializingCacheFailed {})?;
         }
 
         std::fs::create_dir_all(&output_dir).expect("failed to create statistics dir");
@@ -2912,7 +2903,7 @@ mod statistics {
         }
 
         /*fn write(&self, w: &mut impl Write) {
-            for (data, nr) in self.occurences.iter() {
+            for (data, nr) in self.occurrences.iter() {
                 writeln!(w, "{},{}", data, nr).expect("failed to write");
             }
         }*/
@@ -3006,6 +2997,7 @@ mod database {
     pub struct Subtitle {
         pub id: String,
 
+        #[allow(dead_code)]
         pub opensubtitles_metadata: OpensubtitlesMetadata,
         pub data: Vec<LineInfo>,
     }

@@ -15,199 +15,81 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use failure::{Backtrace, Context, Fail};
-use std::fmt;
 use std::path::PathBuf;
 use subparse::SubtitleFormat;
 
-#[macro_export]
-macro_rules! define_error {
-    ($error:ident, $errorKind:ident) => {
-        #[derive(Debug)]
-        pub struct $error {
-            inner: Context<$errorKind>,
-        }
-
-        impl Fail for $error {
-            fn name(&self) -> Option<&str> {
-                self.inner.name()
-            }
-
-            fn cause(&self) -> Option<&dyn Fail> {
-                self.inner.cause()
-            }
-
-            fn backtrace(&self) -> Option<&Backtrace> {
-                self.inner.backtrace()
-            }
-        }
-
-        impl fmt::Display for $error {
-            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                fmt::Display::fmt(&self.inner, f)
-            }
-        }
-
-        #[allow(dead_code)]
-        impl $error {
-            pub fn kind(&self) -> &$errorKind {
-                self.inner.get_context()
-            }
-        }
-
-        #[allow(dead_code)]
-        impl $errorKind {
-            pub fn into_error(self) -> $error {
-                $error {
-                    inner: Context::new(self),
-                }
-            }
-        }
-
-        impl From<$errorKind> for $error {
-            fn from(kind: $errorKind) -> $error {
-                $error {
-                    inner: Context::new(kind),
-                }
-            }
-        }
-
-        impl From<Context<$errorKind>> for $error {
-            fn from(inner: Context<$errorKind>) -> $error {
-                $error { inner: inner }
-            }
-        }
-    };
-}
-
-define_error!(InputFileError, InputFileErrorKind);
-
-#[derive(Clone, Eq, PartialEq, Debug, Fail)]
-pub enum InputFileErrorKind {
+#[derive(Clone, Eq, PartialEq, Debug, thiserror::Error)]
+pub enum InputFileError {
+    #[error("processing video file '{0}' failed")]
     VideoFile(PathBuf),
+    #[error("processing subtitle file '{0}' failed")]
     SubtitleFile(PathBuf),
 }
 
-impl fmt::Display for InputFileErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            InputFileErrorKind::VideoFile(p) => write!(f, "processing video file '{}' failed", p.display()),
-            InputFileErrorKind::SubtitleFile(p) => write!(f, "processing subtitle file '{}' failed", p.display()),
-        }
-    }
-}
-
-define_error!(FileOperationError, FileOperationErrorKind);
-
-#[derive(Clone, Eq, PartialEq, Debug, Fail)]
-pub enum FileOperationErrorKind {
+#[derive(Clone, Eq, PartialEq, Debug, thiserror::Error)]
+pub enum FileOperationError {
+    #[error("failed to open file '{path}'")]
     FileOpen { path: PathBuf },
+    #[error("failed to read file '{path}'")]
     FileRead { path: PathBuf },
+    #[error("failed to write file '{path}'")]
     FileWrite { path: PathBuf },
 }
 
-impl fmt::Display for FileOperationErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            FileOperationErrorKind::FileOpen { path } => write!(f, "failed to open file '{}'", path.display()),
-            FileOperationErrorKind::FileRead { path } => write!(f, "failed to read file '{}'", path.display()),
-            FileOperationErrorKind::FileWrite { path } => write!(f, "failed to read file '{}'", path.display()),
-        }
-    }
-}
-
-define_error!(InputVideoError, InputVideoErrorKind);
-
-#[derive(Clone, Eq, PartialEq, Debug, Fail)]
-pub enum InputVideoErrorKind {
+#[derive(Clone, Eq, PartialEq, Debug, thiserror::Error)]
+pub enum InputVideoError {
+    #[error("failed to extract voice segments from file '{path}'")]
     FailedToDecode { path: PathBuf },
+    #[error("failed to analyse audio segment for voice activity")]
     VadAnalysisFailed,
 }
 
-impl fmt::Display for InputVideoErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            InputVideoErrorKind::FailedToDecode { path } => {
-                write!(f, "failed to extract voice segments from file '{}'", path.display())
-            }
-            InputVideoErrorKind::VadAnalysisFailed => write!(f, "failed to analyse audio segment for voice activity"),
-        }
-    }
-}
-
-define_error!(InputSubtitleError, InputSubtitleErrorKind);
-
-#[derive(Clone, Eq, PartialEq, Debug, Fail)]
-pub enum InputSubtitleErrorKind {
+#[derive(Clone, Eq, PartialEq, Debug, thiserror::Error)]
+pub enum InputSubtitleError {
+    #[error("reading subtitle file '{0}' failed")]
     ReadingSubtitleFileFailed(PathBuf),
+    #[error("unknown subtitle format for file '{0}'")]
     UnknownSubtitleFormat(PathBuf),
+    #[error("parsing subtitle file '{0}' failed")]
     ParsingSubtitleFailed(PathBuf),
-    RetreivingSubtitleLinesFailed(PathBuf),
+    #[error("retrieving subtitle file '{0}' failed")]
+    RetrievingSubtitleLinesFailed(PathBuf),
 }
 
-impl fmt::Display for InputSubtitleErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            InputSubtitleErrorKind::ReadingSubtitleFileFailed(path) => {
-                write!(f, "reading subtitle file '{}' failed", path.display())
-            }
-            InputSubtitleErrorKind::UnknownSubtitleFormat(path) => {
-                write!(f, "unknown subtitle format for file '{}'", path.display())
-            }
-            InputSubtitleErrorKind::ParsingSubtitleFailed(path) => {
-                write!(f, "parsing subtitle file '{}' failed", path.display())
-            }
-            InputSubtitleErrorKind::RetreivingSubtitleLinesFailed(path) => {
-                write!(f, "retreiving subtitle file '{}' failed", path.display())
-            }
-        }
-    }
-}
-
-define_error!(InputArgumentsError, InputArgumentsErrorKind);
-
-#[derive(Clone, PartialEq, Debug, Fail)]
-pub enum InputArgumentsErrorKind {
-    #[fail(
-        display = "expected value '{}' to be in range '{}'-'{}', found value '{}'",
-        argument_name, min, max, value
-    )]
+#[derive(Clone, PartialEq, Debug, thiserror::Error)]
+pub enum InputArgumentsError {
+    #[error("expected value '{argument_name}' to be in range '{min}'-'{max}', found value '{value}'")]
     ValueNotInRange {
         argument_name: String,
         min: f64,
         max: f64,
         value: f64,
     },
-    #[fail(display = "expected positive number for '{}', found '{}'", argument_name, value)]
+    #[error("expected positive number for '{argument_name}', found '{value}'")]
     ExpectedPositiveNumber { argument_name: String, value: i64 },
 
-    #[fail(display = "expected non-negative number for '{}', found '{}'", argument_name, value)]
+    #[error("expected non-negative number for '{argument_name}', found '{value}'")]
     ExpectedNonNegativeNumber { argument_name: String, value: f64 },
 
-    #[fail(display = "argument '{}' with value '{}' could not be parsed", argument_name, value)]
+    #[error("argument '{argument_name}' with value '{value}' could not be parsed")]
     ArgumentParseError { argument_name: String, value: String },
 }
 
-define_error!(TopLevelError, TopLevelErrorKind);
-
-pub enum TopLevelErrorKind {
+#[derive(Clone, Eq, PartialEq, Debug, thiserror::Error)]
+pub enum TopLevelError {
+    #[error(
+        "output file '{input_file_path}' seems to have a different format than input file '{output_file_path}' with format '{}' (this program does not perform conversions)",
+        input_file_format.get_name(),
+    )]
     FileFormatMismatch {
         input_file_path: PathBuf,
         output_file_path: PathBuf,
         input_file_format: SubtitleFormat,
     },
+    #[error("failed to change lines in the subtitle")]
     FailedToUpdateSubtitle,
+    #[error("failed to generate data for subtitle")]
     FailedToGenerateSubtitleData,
+    #[error("failed to instantiate subtitle file")]
     FailedToInstantiateSubtitleFile,
-}
-
-impl fmt::Display for TopLevelErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-         TopLevelErrorKind::FileFormatMismatch { input_file_path, output_file_path, input_file_format } => write!(f, "output file '{}' seems to have a different format than input file '{}' with format '{}' (this program does not perform conversions)", output_file_path.display(), input_file_path.display(), input_file_format.get_name()),
-         TopLevelErrorKind::FailedToUpdateSubtitle => write!(f, "failed to change lines in the subtitle"),
-         TopLevelErrorKind::FailedToGenerateSubtitleData => write!(f, "failed to generate data for subtitle"),
-         TopLevelErrorKind::FailedToInstantiateSubtitleFile => write!(f, "failed to instantiate subtitle file"),
-        }
-    }
 }
